@@ -20,4 +20,10 @@ type PaginatorData struct {
 	Finish bool
 }
 
+type Notify struct {
+	UID  int    `db:"userID"`
+	QID  int    `db:"questID"`
+	Name string `db:"questName"`
+}
+
 var Addons = []string{"legion", "bfa", "sl", "df", "tww", "mn"}
