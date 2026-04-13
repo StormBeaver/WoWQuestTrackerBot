@@ -9,9 +9,7 @@ import (
 	"time"
 )
 
-func GetInfo(addon string) (map[int]time.Time, error) {
-	resultMap := make(map[int]time.Time)
-
+func GetInfo(addon string, resultMap map[int]time.Time) (map[int]time.Time, error) {
 	resp, err := http.Get("https://www.wowhead.com/world-quests/" + addon + "/eu")
 	if err != nil {
 		return nil, err
