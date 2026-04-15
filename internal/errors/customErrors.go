@@ -9,5 +9,6 @@ var (
 	ErrDBConn         error = errors.New("failed to create database connection")
 	ErrDBPing         error = errors.New("failed ping the database")
 
+	ErrEmptyRow         error = errors.New("BD has no rows")
 	ErrBookingIntersect error = errors.New("booking intersect")
 )

@@ -10,12 +10,14 @@ import (
 	"os"
 	"os/signal"
 	customErrors "questTracker/internal/errors"
+	customHandle "questTracker/internal/handler"
 	"questTracker/internal/model"
 	myproxy "questTracker/internal/myProxy"
 	"questTracker/internal/paginator"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -33,11 +35,14 @@ var (
 var ()
 
 func main() {
-	dbfake, err := sql.Open("sqlite", "file:notification.sqlite?cache=shared")
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	sqlite, err := sql.Open("sqlite", "file:notification.sqlite?cache=shared")
 	if err != nil {
 		log.Fatal(err)
 	}
-	db = dbfake
+	db = sqlite
 
 	_, err = db.Exec("CREATE TABLE IF NOT EXISTS notify(userID INTEGER, questID INTEGER, questName TEXT);")
 	if err != nil {
@@ -49,8 +54,6 @@ func main() {
 		log.Fatal("Error loading .env file")
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
 	opts := []bot.Option{
 		bot.WithDefaultHandler(handler),
 	}
@@ -73,8 +76,30 @@ func main() {
 	if err != nil {
 		log.Fatal("can't create bot instance: ", err)
 	}
+
+	go func(ctx context.Context) {
+		ticker := time.Tick(1 * time.Minute)
+		for {
+			select {
+			case <-ticker:
+				quests, err := wowheadQuestCheck()
+				if err != nil {
+					log.Println(err) // somehow should try getInfo 2-3 times after that
+					continue
+				}
+				dbQuestCheck(ctx, b, quests)
+			case <-ctx.Done():
+				log.Println("bot manually stopped")
+				return
+			}
+		}
+	}(ctx)
+
 	log.Println("bot started")
 	b.Start(ctx)
+
+	<-ctx.Done()
+	// gracefull shutdown process
 }
 
 func handler(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -167,6 +192,10 @@ func handler(ctx context.Context, b *bot.Bot, update *models.Update) {
 	}
 }
 
+func notifyHandler() {
+
+}
+
 func parseQuestID(qID string) (int, string, error) {
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -238,7 +267,9 @@ func listNotify(uID int64, offset int) ([]model.Quest, error) {
 			log.Println(err)
 		}
 	}
-
+	if len(res) == 0 {
+		return nil, customErrors.ErrEmptyRow
+	}
 	return res, nil
 }
 
@@ -275,4 +306,52 @@ func deleteElem(qID int) error {
 	defer slc.Close()
 
 	return nil
+}
+
+func wowheadQuestCheck() (map[int]time.Time, error) {
+	log.Println("wowhead quest check started")
+	res := make(map[int]time.Time)
+	var err error
+
+	for _, addon := range model.Addons {
+		res, err = customHandle.GetInfo(addon, res)
+		if err != nil {
+			return nil, err
+		}
+	}
+	log.Println("finish successfully")
+	return res, nil
+}
+
+func dbQuestCheck(ctx context.Context, b *bot.Bot, quests map[int]time.Time) {
+	log.Println("start db check")
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	slc, err := db.QueryContext(ctx, "SELECT * FROM notify")
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	notify := []model.Notify{}
+	for slc.Next() {
+		notify = append(notify, model.Notify{})
+		err := slc.Scan(&notify[len(notify)-1].UID, &notify[len(notify)-1].QID, &notify[len(notify)-1].Name)
+		if err != nil {
+			log.Println(err)
+		}
+	}
+
+	for _, v := range notify {
+		end, ok := quests[v.QID]
+		if ok {
+			b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: v.UID,
+				Text: fmt.Sprintf("Задание \"<a href='https://www.wowhead.com/ru/quest=%d'>%s\"</a> - активно (ID: %d)\nВремя окончания: %v",
+					v.QID, v.Name, v.QID, end.Format(time.RFC822)),
+				ParseMode: models.ParseModeHTML,
+			})
+		}
+	}
+	log.Println("finish db check")
 }
